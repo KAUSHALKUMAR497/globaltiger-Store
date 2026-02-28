@@ -638,6 +638,14 @@
   <p class="hero-hindi">कोई भी product का link paste करो — AI सब कुछ खुद करेगा। देश के हिसाब से currency automatic! 🐯</p>
 
   <div class="add-section" id="addSection">
+    <div class="add-box" id="apiKeyBox" style="margin-bottom:14px;display:none">
+      <h3>🔑 Anthropic API Key डालें</h3>
+      <p style="color:#ef4444;font-size:12px">AI features के लिए API key जरूरी है। <a href="https://console.anthropic.com" target="_blank" style="color:var(--orange)">यहाँ से लें</a></p>
+      <div class="link-row">
+        <input type="password" class="link-input" id="apiKeyInput" placeholder="sk-ant-api...">
+        <button class="add-btn" onclick="saveApiKey()" style="white-space:nowrap">💾 Save</button>
+      </div>
+    </div>
     <div class="add-box">
       <h3>🔗 Product Link डालें | Add Product Link</h3>
       <p>Amazon, Flipkart, Meesho, Myntra, AJIO या किसी भी store का link paste करें — AI बाकी सब करेगा</p>
@@ -705,9 +713,28 @@ let userFlag = '🇮🇳';
 let exchangeRates = {};
 let products = [];
 let currentFilter = 'all';
+let ANTHROPIC_API_KEY = '';
 
 // Load from localStorage
 try { products = JSON.parse(localStorage.getItem('gt_products') || '[]'); } catch(e) { products = []; }
+try { ANTHROPIC_API_KEY = localStorage.getItem('gt_api_key') || ''; } catch(e) {}
+
+function saveApiKey() {
+  const key = document.getElementById('apiKeyInput').value.trim();
+  if (!key.startsWith('sk-ant')) { toast('❌ API key गलत है! sk-ant से शुरू होनी चाहिए','error'); return; }
+  ANTHROPIC_API_KEY = key;
+  localStorage.setItem('gt_api_key', key);
+  document.getElementById('apiKeyBox').style.display = 'none';
+  toast('✅ API Key save हो गई! अब AI काम करेगा 🤖','success');
+}
+
+function checkApiKey() {
+  if (!ANTHROPIC_API_KEY) {
+    document.getElementById('apiKeyBox').style.display = 'block';
+    return false;
+  }
+  return true;
+}
 
 const CURRENCY_MAP = {
   'IN':{ currency:'INR', flag:'🇮🇳', symbol:'₹', name:'India' },
@@ -739,7 +766,14 @@ async function init() {
     const d = await r.json();
     const info = CURRENCY_MAP[d.country_code] || { currency:'USD', flag:'🌍', symbol:'$', name: d.country_name };
     userCurrency = info.currency; userCountry = info.name; userFlag = info.flag;
-  } catch(e) {}
+  } catch(e) {
+    try {
+      const r2 = await fetch('https://ip-api.com/json/');
+      const d2 = await r2.json();
+      const info2 = CURRENCY_MAP[d2.countryCode] || { currency:'USD', flag:'🌍', symbol:'$', name: d2.country };
+      userCurrency = info2.currency; userCountry = info2.name; userFlag = info2.flag;
+    } catch(e2) { /* defaults: INR/India */ }
+  }
 
   document.getElementById('flagDisplay').textContent = userFlag;
   document.getElementById('countryDisplay').textContent = userCountry;
@@ -751,7 +785,13 @@ async function init() {
     const r = await fetch('https://api.exchangerate-api.com/v4/latest/INR');
     const d = await r.json();
     exchangeRates = d.rates;
-  } catch(e) { exchangeRates = FALLBACK; }
+  } catch(e) {
+    try {
+      const r2 = await fetch('https://open.er-api.com/v6/latest/INR');
+      const d2 = await r2.json();
+      exchangeRates = d2.rates || FALLBACK;
+    } catch(e2) { exchangeRates = FALLBACK; }
+  }
 
   const rate = exchangeRates[userCurrency] || 1;
   document.getElementById('sRate').textContent = `1 INR = ${rate.toFixed(4)} ${userCurrency}`;
@@ -808,29 +848,44 @@ Return ONLY valid JSON (no markdown, no code blocks) with exactly this structure
   "originalPriceINR": 3499,
   "discount": 43,
   "rating": 4.2,
-  "reviews": 1450
+  "reviews": 1450,
+  "imageSearch": "short search query for product image (3-5 words)"
 }
 
 Rules:
 - priceINR must be a number (no symbols, no commas)
 - originalPriceINR must be higher than priceINR
 - discount is integer percentage
-- Make pricing realistic for Indian e-commerce`;
+- Make pricing realistic for Indian e-commerce
+- imageSearch should be a short descriptive query like "boAt earbuds black" or "Samsung Galaxy S24"`;
 
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true"
+    },
     body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 1000,
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 500,
       messages: [{ role:"user", content: prompt }]
     })
   });
 
   const data = await res.json();
+  if (data.error) throw new Error(data.error.message);
   const text = data.content?.map(i=>i.text||'').join('') || '';
   const clean = text.replace(/```json|```/g,'').trim();
-  return { ...JSON.parse(clean), store };
+  const parsed = JSON.parse(clean);
+  
+  // Try to get product image from DuckDuckGo
+  if (parsed.imageSearch) {
+    parsed.imageUrl = `https://source.unsplash.com/300x300/?${encodeURIComponent(parsed.imageSearch)}`;
+  }
+  
+  return { ...parsed, store };
 }
 
 // ===================== ADD PRODUCT =====================
@@ -841,6 +896,7 @@ async function addProduct() {
 
   if (!url) { toast('❌ Please paste a product link!','error'); return; }
   if (!url.startsWith('http')) { toast('❌ Please enter a valid URL (start with https://)','error'); return; }
+  if (!checkApiKey()) { toast('⚠️ पहले API key डालें (ऊपर देखें)','error'); return; }
 
   btn.disabled = true;
   btn.innerHTML = '<div class="spinner"></div> AI Fetching...';
@@ -853,6 +909,7 @@ async function addProduct() {
       name: pd.name || pd.store.name + ' Product',
       category: pd.category || 'Other',
       emoji: pd.emoji || '🛒',
+      imageUrl: pd.imageUrl || null,
       priceINR: Number(pd.priceINR) || 999,
       originalPriceINR: Number(pd.originalPriceINR) || 1999,
       discount: Number(pd.discount) || 10,
@@ -864,16 +921,19 @@ async function addProduct() {
     save();
     renderAll();
     input.value = '';
-    toast('✅ Product added by AI!','success');
+    toast('✅ AI ने product add किया!','success');
   } catch(e) {
     console.error(e);
-    // Graceful fallback
+    // Smart fallback with URL-based name
     const store = getStore(url);
+    const urlParts = url.split('/').filter(x => x.length > 3 && !x.includes('http') && !x.includes('www') && !x.includes('.com') && !x.includes('.in'));
+    const guessedName = urlParts[urlParts.length - 1]?.replace(/-/g,' ')?.replace(/\+/g,' ')?.substring(0,60) || store.name + ' Product';
     const p = {
       id: Date.now(), url,
-      name: store.name + ' Product',
+      name: guessedName.charAt(0).toUpperCase() + guessedName.slice(1),
       category: 'Other',
       emoji: store.emoji,
+      imageUrl: null,
       priceINR: 1499,
       originalPriceINR: 2999,
       discount: 50,
@@ -885,7 +945,7 @@ async function addProduct() {
     save();
     renderAll();
     input.value = '';
-    toast('✅ Product added! (AI tip: real product name will show after deployment)','success');
+    toast('✅ Product add हुआ! AI के लिए API key डालें','success');
   }
 
   btn.disabled = false;
@@ -895,12 +955,12 @@ async function addProduct() {
 // ===================== DEMO =====================
 function loadDemo() {
   const demos = [
-    { id:101, url:'https://www.amazon.in/Samsung-Galaxy', name:'Samsung Galaxy S24 FE (8GB+256GB)', category:'Electronics', emoji:'📱', priceINR:44999, originalPriceINR:64999, discount:31, rating:4.5, reviews:3240, store:{name:'Amazon',emoji:'🛒',color:'#FF9900',key:'amazon'} },
-    { id:102, url:'https://www.flipkart.com/hp-laptop', name:'HP 15s Laptop (i5, 16GB RAM, 512GB SSD)', category:'Electronics', emoji:'💻', priceINR:47990, originalPriceINR:72000, discount:33, rating:4.3, reviews:1856, store:{name:'Flipkart',emoji:'🛍️',color:'#2874F0',key:'flipkart'} },
-    { id:103, url:'https://www.myntra.com/nike-shoes', name:'Nike Air Max Running Shoes (Men)', category:'Fashion', emoji:'👟', priceINR:3499, originalPriceINR:8995, discount:61, rating:4.6, reviews:892, store:{name:'Myntra',emoji:'👗',color:'#FF3E6C',key:'other'} },
-    { id:104, url:'https://www.amazon.in/boat-earbuds', name:'boAt Airdopes 141 TWS Earbuds', category:'Electronics', emoji:'🎧', priceINR:999, originalPriceINR:3490, discount:71, rating:4.1, reviews:45000, store:{name:'Amazon',emoji:'🛒',color:'#FF9900',key:'amazon'} },
-    { id:105, url:'https://www.meesho.com/kurti-set', name:'Cotton Floral Printed Kurti Set (Women)', category:'Fashion', emoji:'👗', priceINR:399, originalPriceINR:999, discount:60, rating:4.0, reviews:2100, store:{name:'Meesho',emoji:'🏷️',color:'#9B59B6',key:'meesho'} },
-    { id:106, url:'https://www.amazon.in/instant-pot', name:'Instant Pot Duo 7-in-1 Electric Pressure Cooker', category:'Home', emoji:'🍲', priceINR:7999, originalPriceINR:14999, discount:47, rating:4.7, reviews:12800, store:{name:'Amazon',emoji:'🛒',color:'#FF9900',key:'amazon'} },
+    { id:101, url:'https://www.amazon.in/Samsung-Galaxy', name:'Samsung Galaxy S24 FE (8GB+256GB)', category:'Electronics', emoji:'📱', imageUrl:'https://images.unsplash.com/photo-1511707171634-5f897ff02aa9?w=300&h=300&fit=crop', priceINR:44999, originalPriceINR:64999, discount:31, rating:4.5, reviews:3240, store:{name:'Amazon',emoji:'🛒',color:'#FF9900',key:'amazon'} },
+    { id:102, url:'https://www.flipkart.com/hp-laptop', name:'HP 15s Laptop (i5, 16GB RAM, 512GB SSD)', category:'Electronics', emoji:'💻', imageUrl:'https://images.unsplash.com/photo-1496181133206-80ce9b88a853?w=300&h=300&fit=crop', priceINR:47990, originalPriceINR:72000, discount:33, rating:4.3, reviews:1856, store:{name:'Flipkart',emoji:'🛍️',color:'#2874F0',key:'flipkart'} },
+    { id:103, url:'https://www.myntra.com/nike-shoes', name:'Nike Air Max Running Shoes (Men)', category:'Fashion', emoji:'👟', imageUrl:'https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=300&h=300&fit=crop', priceINR:3499, originalPriceINR:8995, discount:61, rating:4.6, reviews:892, store:{name:'Myntra',emoji:'👗',color:'#FF3E6C',key:'other'} },
+    { id:104, url:'https://www.amazon.in/boat-earbuds', name:'boAt Airdopes 141 TWS Earbuds', category:'Electronics', emoji:'🎧', imageUrl:'https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=300&h=300&fit=crop', priceINR:999, originalPriceINR:3490, discount:71, rating:4.1, reviews:45000, store:{name:'Amazon',emoji:'🛒',color:'#FF9900',key:'amazon'} },
+    { id:105, url:'https://www.meesho.com/kurti-set', name:'Cotton Floral Printed Kurti Set (Women)', category:'Fashion', emoji:'👗', imageUrl:'https://images.unsplash.com/photo-1583391733956-6c78276477e2?w=300&h=300&fit=crop', priceINR:399, originalPriceINR:999, discount:60, rating:4.0, reviews:2100, store:{name:'Meesho',emoji:'🏷️',color:'#9B59B6',key:'meesho'} },
+    { id:106, url:'https://www.amazon.in/instant-pot', name:'Instant Pot Duo 7-in-1 Electric Pressure Cooker', category:'Home', emoji:'🍲', imageUrl:'https://images.unsplash.com/photo-1585325701954-2cff3b5e8c7a?w=300&h=300&fit=crop', priceINR:7999, originalPriceINR:14999, discount:47, rating:4.7, reviews:12800, store:{name:'Amazon',emoji:'🛒',color:'#FF9900',key:'amazon'} },
   ];
   const existing = new Set(products.map(p=>p.id));
   demos.forEach(d => { if(!existing.has(d.id)) products.push(d); });
@@ -935,9 +995,13 @@ function renderAll() {
   grid.innerHTML = list.map((p, i) => {
     const price = convert(p.priceINR);
     const orig = convert(p.originalPriceINR);
+    const imgHtml = p.imageUrl
+      ? `<img src="${p.imageUrl}" alt="${p.name}" style="width:100%;height:100%;object-fit:cover;border-radius:0" onerror="this.style.display='none';document.getElementById('emoji_${p.id}').style.display='flex'">`
+      : '';
     return `<div class="pcard" style="animation-delay:${i*0.05}s">
       <div class="pimg">
-        <span>${p.emoji}</span>
+        ${imgHtml}
+        <span id="emoji_${p.id}" style="${p.imageUrl?'display:none':'display:flex'};align-items:center;justify-content:center;width:100%;height:100%;font-size:75px">${p.emoji}</span>
         <div class="ribbon">${p.store.emoji} ${p.store.name}</div>
         <div class="disc-badge">-${p.discount}%</div>
       </div>
